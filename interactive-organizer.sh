@@ -129,20 +129,21 @@ open_with_less() {
 }
 
 move_or_link_file_and_maybe_meta() {
-	local new_folder="$1" cf_path="$2" metadata_path="$3" cf_name new_path new_metadata_path
+	local new_folder="$1" cf_path="$2" metadata_path="$3" cf_name new_path #new_metadata_path
 	cf_name="$(basename "$cf_path")"
 	new_path="$(unique_filename "${new_folder%/}" "$cf_name")"
-	new_metadata_path="$new_path.${OUTPUT_METADATA_EXTENSION}"
-
-	move_or_link_file "$cf_path" "$new_path" 2>&1
 
 	if [[ -f "$metadata_path" ]]; then
-		move_or_link_file "$metadata_path" "$new_metadata_path" 2>&1
+		# TODO: this can be optimized by logging the additional directories needed
+		# during metadata creation time.
+		move_or_link_ebook_file_and_metadata "$new_folder" "$cf_path" "$metadata_path" 2>&1
+	else
+		move_or_link_file "$cf_path" "$new_path" 2>&1
 	fi
 }
 
 cgrep() {
-	GREP_COLOR="$1" grep --color=always -iE "^|${2:-^}"
+	GREP_COLORS="$1" grep --color=always -iE "^|${2:-^}"
 }
 
 header_and_check() {
@@ -177,10 +178,10 @@ header_and_check() {
 	done < <(echo "${old_name%.*}" | tokenize $'\n' | { grep -ivE "^($masked_cf_tokens)+\$" || true; })
 
 	old_name_hl=$(echo "$old_name" |
-		cgrep '1;31' "$(str_concat '|' ${missing_words[@]:+"${missing_words[@]}"})" |
-		cgrep '1;33' "$(str_concat '|' ${partial_words[@]:+"${partial_words[@]}"})" |
-		cgrep '1;32' "$masked_cf_tokens" |
-		cgrep '1;30' "$TOKENS_TO_IGNORE" )
+		cgrep 'mt=1;31' "$(str_concat '|' ${missing_words[@]:+"${missing_words[@]}"})" |
+		cgrep 'mt=1;33' "$(str_concat '|' ${partial_words[@]:+"${partial_words[@]}"})" |
+		cgrep 'mt=1;32' "$masked_cf_tokens" |
+		cgrep 'mt=1;30' "$TOKENS_TO_IGNORE" )
 
 	if [[ "$MATCH_PARTIAL_WORDS" != true ]]; then
 		missing_words=(${missing_words[@]:+"${missing_words[@]}"} ${partial_words[@]:+"${partial_words[@]}"})
@@ -202,7 +203,7 @@ header_and_check() {
 
 
 reorganize_interactively() {
-	local cf_path="$1" metadata_path="$1.${OUTPUT_METADATA_EXTENSION}" cf_folder="${1%/*}" old_path="" opt
+	local cf_path="$1" base_path="$2" metadata_path="$1.${OUTPUT_METADATA_EXTENSION}" cf_folder="${1%/*}" old_path="" opt
 	old_path=$(get_old_path "$cf_path" "$metadata_path")
 
 	read -r -e -i "$(basename "$old_path")" -p "Enter search terms or 'new filename': " opt  < /dev/tty
@@ -221,7 +222,7 @@ reorganize_interactively() {
 		if [[ "$DRY_RUN" == "false" ]]; then
 			echo "Old file path       : $old_path" > "$metadata_path"
 		fi
-		review_file "$cf_path"
+		review_file "$cf_path" "$base_path"
 		return 0
 	fi
 
@@ -260,7 +261,7 @@ reorganize_interactively() {
 				fi
 			fi
 
-			decho "Addding additional metadata to the end of the metadata file..."
+			decho "Adding additional metadata to the end of the metadata file..."
 			echo "Old file path       : $old_path" >> "$tmpmfile"
 			echo "Metadata source     : ${fetch_source:-all}" >> "$tmpmfile"
 
@@ -272,9 +273,9 @@ reorganize_interactively() {
 			fi
 
 			decho "Organizing '$cf_path' (with '$tmpmfile')..."
-			cf_path="$(move_or_link_ebook_file_and_metadata "$cf_folder" "$cf_path" "$tmpmfile")"
+			cf_path="$(move_or_link_ebook_file_and_metadata "$base_path" "$cf_path" "$tmpmfile")"
 			decho "New path is '$cf_path'! Reviewing the new file..."
-			review_file "$cf_path"
+			review_file "$cf_path" "$base_path"
 			return 0
 		fi
 	done
@@ -286,7 +287,7 @@ reorganize_interactively() {
 }
 
 review_file() {
-	local cf_path="$1" metadata_path="$1.${OUTPUT_METADATA_EXTENSION}"
+	local cf_path="$1" base_path="$2" metadata_path="$1.${OUTPUT_METADATA_EXTENSION}"
 	while ! header_and_check "$cf_path" "$metadata_path"; do
 		local opt old_path
 		old_path=$(get_old_path "$cf_path" "$metadata_path")
@@ -322,7 +323,7 @@ review_file() {
 					echo "No path entered, ignoring!"
 				fi
 			;;
-			"i") reorganize_interactively "$cf_path" "$metadata_path" && return ;;
+			"i") reorganize_interactively "$cf_path" "$base_path" && return ;;
 			"o") xdg-open "$1" >/dev/null 2>&1 & ;;
 			"l") open_with_less "$cf_path" ;;
 			"c")
@@ -358,7 +359,7 @@ for fpath in "$@"; do
 
 	find "$fpath" -type f ! -name "*.${OUTPUT_METADATA_EXTENSION}" -print0 | sort -z ${FILE_SORT_FLAGS[@]:+"${FILE_SORT_FLAGS[@]}"} | while IFS= read -r -d '' file_to_review
 	do
-		review_file "$file_to_review"
+		review_file "$file_to_review" "$fpath"
 		echo "==============================================================================="
 		echo
 	done
