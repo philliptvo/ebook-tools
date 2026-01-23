@@ -5,6 +5,7 @@ set -eEuo pipefail
 [ -z "${OUTPUT_FOLDERS:+x}" ] && OUTPUT_FOLDERS=()
 
 : "${QUICK_MODE:=false}"
+: "${INTERACTIVE_ORGANIZE_BASE_DIR:=}"
 : "${CUSTOM_MOVE_BASE_DIR:=""}"
 : "${RESTORE_ORIGINAL_BASE_DIR:=""}"
 
@@ -31,6 +32,7 @@ for arg in "$@"; do
 	case $arg in
 		-qm|--quick-mode) QUICK_MODE=true ;;
 		-o=*|--output-folder=*) OUTPUT_FOLDERS+=("${arg#*=}") ;;
+		-iobd=*|--interactive-organize-base-dir=*) INTERACTIVE_ORGANIZE_BASE_DIR="${arg#*=}" ;;
 		-cmbd=*|--custom-move-base-dir=*) CUSTOM_MOVE_BASE_DIR="${arg#*=}" ;;
 		-robd=*|--restore-original-base-dir=*) RESTORE_ORIGINAL_BASE_DIR="${arg#*=}" ;;
 		-ddm=*|--diacritic-difference-masking=*) DIACRITIC_DIFFERENCE_MASKINGS+=("${arg#*=}") ;;
@@ -358,9 +360,12 @@ review_file() {
 for fpath in "$@"; do
 	echo "Recursively scanning '$fpath' for files (except .${OUTPUT_METADATA_EXTENSION})"
 
+	base_path="${INTERACTIVE_ORGANIZE_BASE_DIR:-${fpath%/}}/"
+	echo -e "Base path is ${BOLD}$base_path${NC}"
+
 	find "$fpath" -type f ! -name "*.${OUTPUT_METADATA_EXTENSION}" -print0 | sort -z ${FILE_SORT_FLAGS[@]:+"${FILE_SORT_FLAGS[@]}"} | while IFS= read -r -d '' file_to_review
 	do
-		review_file "$file_to_review" "$fpath"
+		review_file "$file_to_review" "$base_path"
 		echo "==============================================================================="
 		echo
 	done
