@@ -14,7 +14,11 @@ set -eEuo pipefail
 # value is set below  the script argument parser.
 [ -z "${DIACRITIC_DIFFERENCE_MASKINGS:+x}" ] && DIACRITIC_DIFFERENCE_MASKINGS=()
 
+[ -z "${STRICT_MATCH_FILTER_METADATA:+x}" ] && STRICT_MATCH_FILTER_METADATA=()
+[ -z "${STRICT_MATCH_FILTER_LITERALS:+x}" ] && STRICT_MATCH_FILTER_LITERALS=()
+
 : "${MATCH_PARTIAL_WORDS:=false}"
+: "${STRICT_MATCH:=false}"
 : "${VERBOSE:=true}"
 
 # shellcheck source=./lib.sh
@@ -31,6 +35,7 @@ print_help() {
 for arg in "$@"; do
 	case $arg in
 		-qm|--quick-mode) QUICK_MODE=true ;;
+		-sm|--strict-match) STRICT_MATCH=true ;;
 		-o=*|--output-folder=*) OUTPUT_FOLDERS+=("${arg#*=}") ;;
 		-iobd=*|--interactive-organize-base-dir=*) INTERACTIVE_ORGANIZE_BASE_DIR="${arg#*=}" ;;
 		-cmbd=*|--custom-move-base-dir=*) CUSTOM_MOVE_BASE_DIR="${arg#*=}" ;;
@@ -56,6 +61,28 @@ if (( ${#DIACRITIC_DIFFERENCE_MASKINGS[@]} == 0 )); then
 		's/(ae|æ)/(ae|æ)/g'
 		's/(ss|ß)/(ss|ß)/g'
 		's/([[=a=][=e=][=i=][=o=][=u=][=c=][=n=][=s=][=z=]])/[[=\1=]]/g'
+	)
+fi
+
+if (( "${#STRICT_MATCH_FILTER_METADATA[@]}" == 0 )); then
+	STRICT_MATCH_FILTER_METADATA=(
+		'AUTHORS'
+		'SERIES'
+	)
+fi
+
+# Derived from "${TOKENS_TO_IGNORE}"
+if (( "${#STRICT_MATCH_FILTER_LITERALS[@]}" == 0 )); then
+	STRICT_MATCH_FILTER_LITERALS=(
+		"by"
+		"ebook"
+		"book"
+		"novel"
+		"series"
+		"ed(ition)?"
+		"vol(ume)?"
+		"ver(sion)?"
+		"${RE_YEAR}"
 	)
 fi
 
@@ -148,18 +175,28 @@ cgrep() {
 	GREP_COLORS="$1" grep --color=always -iE "^|${2:-^}"
 }
 
+print_file_header() {
+	local old_name="$1" old_path="$2" cf_name="$3" cf_hsize="$4" cf_full_name="$5"
+
+	# New file
+	echo -e "File	'$cf_name' (${BOLD}${cf_hsize}${NC} in '${BOLD_BLUE}${cf_full_name%/*}/${NC}') ${BOLD}[has metadata]${NC}"
+	# Old file
+	echo "Old	'$old_name' (in '${old_path%/*}/')"
+}
+
 header_and_check() {
-	local cf_path="$1" metadata_path="$2" base_path="$3" cf_name cf_hsize
+	local cf_path="$1" metadata_path="$2" base_path="$3" cf_name cf_hsize cf_name_hl
 	cf_name="$(basename "$cf_path")"
 	cf_full_name="${cf_path#${base_path}/}"
 	cf_hsize="$(numfmt --to=iec-i --suffix=B --format='%.1f' "$(stat -c '%s' "$cf_path")")"
 
-	echo -en "File	'${BOLD_YELLOW}${cf_name}${NC}' (${BOLD}${cf_hsize}${NC} in '${BOLD_BLUE}${cf_full_name%/*}/${NC}')"
+	# default value with no highlights
+	cf_name_hl="$cf_name"
+
 	if [[ !  -f "$metadata_path" ]]; then
-		echo -e " ${BOLD_RED}[no metadata]${NC}"
+		echo -e "File	'${BOLD_YELLOW}${cf_name}${NC}' (${BOLD}${cf_hsize}${NC} in '${BOLD_BLUE}${cf_full_name%/*}/${NC}') ${BOLD_RED}[no metadata]${NC}"
 		return 1
 	fi
-	echo -e " ${BOLD}[has metadata]${NC}"
 
 	local cf_tokens masked_cf_tokens sed_expr sed_exprs=()
 	for sed_expr in "${DIACRITIC_DIFFERENCE_MASKINGS[@]:-}"; do
@@ -190,17 +227,72 @@ header_and_check() {
 		missing_words=(${missing_words[@]:+"${missing_words[@]}"} ${partial_words[@]:+"${partial_words[@]}"})
 	fi
 
-	echo "Old	'$old_name_hl' (in '${old_path%/*}/')"
-
 	if (( ${#missing_words[@]} != 0 )); then
 		echo -e "Missing words from the old file name: ${BOLD}$(str_concat ',' ${missing_words[@]:+"${missing_words[@]}"})${NC}"
+		print_file_header "$old_name_hl" "$old_path" "$cf_name_hl" "$cf_hsize" "$cf_full_name"
 		return 2
 	fi
 
 	echo -e "${BOLD}No missing words from the old filename in the new!${NC}"
 	if [[ "$QUICK_MODE" != true ]]; then
+		print_file_header "$old_name_hl" "$old_path" "$cf_name_hl" "$cf_hsize" "$cf_full_name"
 		return 3
 	fi
+
+	if [[ "$STRICT_MATCH" == true ]]; then
+		local line key value literal
+		sed_exprs=() # reset to use for "strict match"
+
+		# Add metadata filters
+		if [[ -f "$metadata_path" ]]; then
+			# Create metadata dictionary
+			declare -A d=()
+			while IFS='' read -r line || [[ -n "$line" ]]; do
+				#TODO: fix this properly
+				d["$(echo "${line%%:*}" | sed -e 's/[ \t]*$//' -e 's/ /_/g' -e 's/[^a-zA-Z0-9_]//g' -e 's/\(.*\)/\U\1/')"]="$(echo "${line#*: }" | sed -e 's/[\\/\*\?<>\|\x01-\x1F\x7F\x22\x24\x60]/_/g' | cut -c 1-100 )"
+			done < "$metadata_path"
+
+			# list of relevant filters: authors, series
+			for key in "${STRICT_MATCH_FILTER_METADATA[@]:-}"; do
+				value="${d[$key]:-}"
+				[[ -z "$value" ]] && continue
+
+				while read -r token || [[ -n "$token" ]]; do
+					sed_exprs+=("$token")
+				done < <(echo "$value" | tokenize $'\n')
+			done
+		fi
+
+		# Add literal filters
+		for literal in "${STRICT_MATCH_FILTER_LITERALS[@]:-}"; do
+			sed_exprs+=("${literal:+$literal}")
+		done
+
+		local non_strict_word non_strict_words=()
+		while read -r non_strict_word || [[ -n "$non_strict_word" ]]; do
+			non_strict_words+=("$non_strict_word")
+		done < <(
+			echo "${cf_name%.*}" |
+			tokenize $'\n' true 2 "" |
+			(
+					IFS='|'
+					grep -iE "^(${sed_exprs[*]})+$"
+			) || true
+		)
+
+		if (( "${#non_strict_words[@]}" != 0 )); then
+			echo -e "Strict match failures from the new file name: ${BOLD}$(str_concat ',' ${non_strict_words[@]:+"${non_strict_words[@]}"})${NC}"
+
+			cf_name_hl=$(echo "$cf_name" |
+				cgrep 'mt=1;31' "$(str_concat '|' ${non_strict_words[@]:+"${non_strict_words[@]}"})" )
+			print_file_header "$old_name_hl" "$old_path" "$cf_name_hl" "$cf_hsize" "$cf_full_name"
+
+			return 4
+		fi
+
+		echo -e "${BOLD}New filename passes strict match!${NC}"
+	fi
+
 	echo "Quick mode enabled, skipping to the next file"
 }
 
@@ -360,7 +452,8 @@ review_file() {
 for fpath in "$@"; do
 	echo "Recursively scanning '$fpath' for files (except .${OUTPUT_METADATA_EXTENSION})"
 
-	base_path="${INTERACTIVE_ORGANIZE_BASE_DIR:-${fpath%/}}/"
+	base_path="${INTERACTIVE_ORGANIZE_BASE_DIR:-$fpath}"
+	base_path="${base_path%/}/"
 	echo -e "Base path is ${BOLD}$base_path${NC}"
 
 	find "$fpath" -type f ! -name "*.${OUTPUT_METADATA_EXTENSION}" -print0 | sort -z ${FILE_SORT_FLAGS[@]:+"${FILE_SORT_FLAGS[@]}"} | while IFS= read -r -d '' file_to_review

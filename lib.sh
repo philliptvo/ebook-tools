@@ -351,7 +351,8 @@ grep_meta_val() {
 # them with $1 (or ' ' if not specified)
 tokenize() {
 	local separator="${1:- }" dedup="${2:-true}"
-	local lenr="${3:-$TOKEN_MIN_LENGTH}" tokens_to_ignore="${4:-$TOKENS_TO_IGNORE}"
+	local lenr="${3:-$TOKEN_MIN_LENGTH}" tokens_to_ignore="${4-$TOKENS_TO_IGNORE}"
+
 	{ grep -oE "[[:alpha:]]{${lenr},}|[[:digit:]]{${lenr},}" || true; } | to_lower | {
 		if [[ "$dedup" == true ]]; then
 			uniq_no_sort
