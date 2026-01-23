@@ -147,13 +147,14 @@ cgrep() {
 }
 
 header_and_check() {
-	local cf_path="$1" metadata_path="$2" cf_name cf_hsize
+	local cf_path="$1" metadata_path="$2" base_path="$3" cf_name cf_hsize
 	cf_name="$(basename "$cf_path")"
+	cf_full_name="${cf_path#${base_path}/}"
 	cf_hsize="$(numfmt --to=iec-i --suffix=B --format='%.1f' "$(stat -c '%s' "$cf_path")")"
 
-	echo -en "File	'$cf_name' (${BOLD}${cf_hsize}${NC} in '${cf_path%/*}/')"
+	echo -en "File	'${BOLD_YELLOW}${cf_name}${NC}' (${BOLD}${cf_hsize}${NC} in '${BOLD_BLUE}${cf_full_name%/*}/${NC}')"
 	if [[ !  -f "$metadata_path" ]]; then
-		echo -e " ${BOLD}${RED}[no metadata]${NC}"
+		echo -e " ${BOLD_RED}[no metadata]${NC}"
 		return 1
 	fi
 	echo -e " ${BOLD}[has metadata]${NC}"
@@ -162,7 +163,7 @@ header_and_check() {
 	for sed_expr in "${DIACRITIC_DIFFERENCE_MASKINGS[@]:-}"; do
 		sed_exprs+=("${sed_expr:+--expression=$sed_expr}")
 	done
-	cf_tokens=$(echo "${cf_name%.*}" | tokenize $'\n')
+	cf_tokens=$(echo "${cf_full_name%.*}" | tokenize $'\n')
 	masked_cf_tokens=$(echo "$cf_tokens" | stream_concat '|' | sed -E "${sed_exprs[@]:-}")
 
 	local old_path old_name old_name_hl missing_word missing_words=() partial_words=()
@@ -288,7 +289,7 @@ reorganize_interactively() {
 
 review_file() {
 	local cf_path="$1" base_path="$2" metadata_path="$1.${OUTPUT_METADATA_EXTENSION}"
-	while ! header_and_check "$cf_path" "$metadata_path"; do
+	while ! header_and_check "$cf_path" "$metadata_path" "$base_path"; do
 		local opt old_path
 		old_path=$(get_old_path "$cf_path" "$metadata_path")
 		opt=$(get_option "$old_path")
